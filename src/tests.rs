@@ -243,24 +243,17 @@ async fn it_starts_polkadot_non_fellowship_referenda_correctly() {
 	let proposal_details = polkadot_staking_validator_user_input();
 	let calls = generate_calls(&proposal_details).await;
 
-	let public_preimage =
-		hex::decode("0x05000c070ac8".trim_start_matches("0x")).expect("Valid call");
-	let public_referendum = hex::decode("0x3e003f0002439a93279b25a49bf366c9fe1b06d4fc342f46b5a3b2734dcffe0c56c12b28ef03000000010a000000".trim_start_matches("0x")).expect("Valid call");
+	// With Inline encoding, the proposal is embedded directly in the referendum call
+	let public_referendum = hex::decode("0x3e003f00010c070ac8010a000000".trim_start_matches("0x")).expect("Valid call");
 
 	assert!(calls.preimage_for_whitelist_call.is_none(), "it must not generate this call");
 	assert!(calls.fellowship_referendum_submission.is_none(), "it must not generate this call");
 
-	assert!(calls.preimage_for_public_referendum.is_some(), "it must generate this call");
-	if let Some((coh, length)) = calls.preimage_for_public_referendum {
-		match coh {
-			CallOrHash::Call(public_preimage_generated) => {
-				let call_info = CallInfo::from_runtime_call(public_preimage_generated);
-				assert_eq!(call_info.encoded, public_preimage);
-				assert_eq!(length, 6u32);
-			},
-			CallOrHash::Hash(_) => panic!("call length within the limit"),
-		}
-	}
+	// Small proposals use Inline (no preimage needed)
+	assert!(
+		calls.preimage_for_public_referendum.is_none(),
+		"small proposals should use Inline, not Lookup"
+	);
 
 	assert!(calls.public_referendum_submission.is_some(), "it must generate this call");
 	if let Some(public_referendum_generated) = calls.public_referendum_submission {
@@ -316,26 +309,17 @@ async fn it_starts_polkadot_root_referenda_correctly() {
 	let proposal_details = polkadot_root_remark_user_input();
 	let calls = generate_calls(&proposal_details).await;
 
-	let public_preimage = hex::decode(
-		"0x05005800004c6f70656e676f762d7375626d69742074657374".trim_start_matches("0x"),
-	)
-	.expect("Valid call");
-	let public_referendum = hex::decode("0x3e000000028821e8db19b8e34b62ee8bc618a5ed3eecb9761d7d81349b00aa5ce5dfca253416000000010a000000".trim_start_matches("0x")).expect("Valid call");
+	// With Inline encoding, the proposal is embedded directly in the referendum call
+	let public_referendum = hex::decode("0x3e000000015800004c6f70656e676f762d7375626d69742074657374010a000000".trim_start_matches("0x")).expect("Valid call");
 
 	assert!(calls.preimage_for_whitelist_call.is_none(), "it must not generate this call");
 	assert!(calls.fellowship_referendum_submission.is_none(), "it must not generate this call");
 
-	assert!(calls.preimage_for_public_referendum.is_some(), "it must generate this call");
-	if let Some((coh, length)) = calls.preimage_for_public_referendum {
-		match coh {
-			CallOrHash::Call(public_preimage_generated) => {
-				let call_info = CallInfo::from_runtime_call(public_preimage_generated);
-				assert_eq!(call_info.encoded, public_preimage);
-				assert_eq!(length, 25u32);
-			},
-			CallOrHash::Hash(_) => panic!("call length within the limit"),
-		}
-	}
+	// Small proposals use Inline (no preimage needed)
+	assert!(
+		calls.preimage_for_public_referendum.is_none(),
+		"small proposals should use Inline, not Lookup"
+	);
 
 	assert!(calls.public_referendum_submission.is_some(), "it must generate this call");
 	if let Some(public_referendum_generated) = calls.public_referendum_submission {
@@ -349,24 +333,17 @@ async fn it_starts_kusama_non_fellowship_referenda_correctly() {
 	let proposal_details = kusama_staking_validator_user_input();
 	let calls = generate_calls(&proposal_details).await;
 
-	let public_preimage =
-		hex::decode("0x06000c060ac8".trim_start_matches("0x")).expect("Valid call");
-	let public_referendum = hex::decode("0x5c005d00028fd8848a8f93980f5cea2de1c11f29ed7dced592aa207218a2e0ae5b78b9fffb030000000000e1f505".trim_start_matches("0x")).expect("Valid call");
+	// With Inline encoding, the proposal is embedded directly in the referendum call
+	let public_referendum = hex::decode("0x5c005d00010c060ac80000e1f505".trim_start_matches("0x")).expect("Valid call");
 
 	assert!(calls.preimage_for_whitelist_call.is_none(), "it must not generate this call");
 	assert!(calls.fellowship_referendum_submission.is_none(), "it must not generate this call");
 
-	assert!(calls.preimage_for_public_referendum.is_some(), "it must generate this call");
-	if let Some((coh, length)) = calls.preimage_for_public_referendum {
-		match coh {
-			CallOrHash::Call(public_preimage_generated) => {
-				let call_info = CallInfo::from_runtime_call(public_preimage_generated);
-				assert_eq!(call_info.encoded, public_preimage);
-				assert_eq!(length, 6u32);
-			},
-			CallOrHash::Hash(_) => panic!("call length within the limit"),
-		}
-	}
+	// Small proposals use Inline (no preimage needed)
+	assert!(
+		calls.preimage_for_public_referendum.is_none(),
+		"small proposals should use Inline, not Lookup"
+	);
 
 	assert!(calls.public_referendum_submission.is_some(), "it must generate this call");
 	if let Some(public_referendum_generated) = calls.public_referendum_submission {
@@ -426,26 +403,17 @@ async fn it_starts_kusama_root_referenda_correctly() {
 	let proposal_details = kusama_root_remark_user_input();
 	let calls = generate_calls(&proposal_details).await;
 
-	let public_preimage = hex::decode(
-		"0x06005800004c6f70656e676f762d7375626d69742074657374".trim_start_matches("0x"),
-	)
-	.expect("Valid call");
-	let public_referendum = hex::decode("0x5c000000028821e8db19b8e34b62ee8bc618a5ed3eecb9761d7d81349b00aa5ce5dfca253416000000010a000000".trim_start_matches("0x")).expect("Valid call");
+	// With Inline encoding, the proposal is embedded directly in the referendum call
+	let public_referendum = hex::decode("0x5c000000015800004c6f70656e676f762d7375626d69742074657374010a000000".trim_start_matches("0x")).expect("Valid call");
 
 	assert!(calls.preimage_for_whitelist_call.is_none(), "it must not generate this call");
 	assert!(calls.fellowship_referendum_submission.is_none(), "it must not generate this call");
 
-	assert!(calls.preimage_for_public_referendum.is_some(), "it must generate this call");
-	if let Some((coh, length)) = calls.preimage_for_public_referendum {
-		match coh {
-			CallOrHash::Call(public_preimage_generated) => {
-				let call_info = CallInfo::from_runtime_call(public_preimage_generated);
-				assert_eq!(call_info.encoded, public_preimage);
-				assert_eq!(length, 25u32);
-			},
-			CallOrHash::Hash(_) => panic!("call length within the limit"),
-		}
-	}
+	// Small proposals use Inline (no preimage needed)
+	assert!(
+		calls.preimage_for_public_referendum.is_none(),
+		"small proposals should use Inline, not Lookup"
+	);
 
 	assert!(calls.public_referendum_submission.is_some(), "it must generate this call");
 	if let Some(public_referendum_generated) = calls.public_referendum_submission {

@@ -2,6 +2,10 @@ pub(super) use parity_scale_codec::Encode as _;
 pub(super) use sp_core::blake2_256;
 pub(super) use subxt::utils::H256;
 
+/// Maximum size in bytes for inline preimages in OpenGov referenda.
+/// Calls exceeding this limit must use Lookup with a separate preimage.
+pub(super) const INLINE_PREIMAGE_LIMIT: u32 = 128;
+
 // Kusama Chains -----------------------------------------------------------------------------------
 
 #[subxt::subxt(
