@@ -2,14 +2,13 @@
 name = "opengov-cli"
 version = "0.2.0"
 edition = "2021"
+rust-version = "1.74"
 authors = ["joepetrowski"]
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 anyhow = "1"
 parity-scale-codec = "3.7.5"
-sp-core = { git = "https://github.com/paritytech/polkadot-sdk", branch = "master" }
+sp-core = { git = "https://github.com/paritytech/polkadot-sdk", rev = "73b44193c8e66acd699f04265027289d030f6c66" }
 subxt = "0.42.0"
 hex = "0.4.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

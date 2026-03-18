@@ -14,22 +14,24 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  TOOLCHAIN_LINT: nightly-2023-11-13
+  TOOLCHAIN_LINT: nightly-2025-03-01
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
       - name: Build
         env:
           SKIP_WASM_BUILD: 1
         run: cargo build --verbose
 
   lint:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
 
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@v1.3.1
@@ -57,11 +59,10 @@ jobs:
           sudo swapon --show
 
       - name: Install nightly toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: ${{ env.TOOLCHAIN_LINT }}
           components: rustfmt, clippy, rust-src
-          override: true
 
       - name: Fmt
         run: cargo +${{ env.TOOLCHAIN_LINT }} fmt --all -- --check
@@ -69,14 +70,12 @@ jobs:
       - name: Clippy
         env:
           SKIP_WASM_BUILD: 1
-        uses: actions-rs-plus/clippy-check@v2
-        with:
-          toolchain: ${{ env.TOOLCHAIN_LINT }}
-          args: --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test --verbose

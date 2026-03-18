@@ -600,3 +600,112 @@ fn it_creates_constrained_print_output() {
 	}
 	assert_eq!(length, proposal_call_info.length);
 }
+
+#[test]
+fn invalid_hex_proposal_returns_error() {
+	let result = get_proposal_bytes(String::from("0xNOTHEX"));
+	assert!(result.is_err());
+	let err = result.unwrap_err().to_string();
+	assert!(err.contains("Invalid hex"), "Expected hex error, got: {}", err);
+}
+
+#[test]
+fn missing_file_proposal_returns_error() {
+	let result = get_proposal_bytes(String::from("/nonexistent/path/proposal.call"));
+	assert!(result.is_err());
+	let err = result.unwrap_err().to_string();
+	assert!(
+		err.contains("Failed to read proposal file"),
+		"Expected file error, got: {}",
+		err
+	);
+}
+
+#[test]
+fn invalid_network_returns_error() {
+	let args = UpgradeArgs {
+		network: String::from("westend"),
+		only: false,
+		local: false,
+		relay_version: Some(String::from("1.0.0")),
+		asset_hub: None,
+		bridge_hub: None,
+		collectives: None,
+		encointer: None,
+		people: None,
+		coretime: None,
+		filename: None,
+		additional: None,
+	};
+	let result = build_upgrade::parse_inputs(args);
+	assert!(result.is_err());
+	let err = result.unwrap_err().to_string();
+	assert!(
+		err.contains("westend"),
+		"Error should mention the invalid network, got: {}",
+		err
+	);
+}
+
+#[test]
+fn only_without_any_version_produces_no_version_dir() {
+	let args = UpgradeArgs {
+		network: String::from("polkadot"),
+		only: true,
+		local: false,
+		relay_version: None,
+		asset_hub: None,
+		bridge_hub: None,
+		collectives: None,
+		encointer: None,
+		people: None,
+		coretime: None,
+		filename: None,
+		additional: None,
+	};
+	let details = build_upgrade::parse_inputs(args).unwrap();
+	assert!(details.networks.is_empty(), "No networks should be selected");
+}
+
+#[test]
+fn network_display_names_are_distinct() {
+	use std::collections::HashSet;
+	let networks = vec![
+		Network::Kusama,
+		Network::KusamaAssetHub,
+		Network::KusamaBridgeHub,
+		Network::KusamaPeople,
+		Network::KusamaCoretime,
+		Network::KusamaEncointer,
+		Network::Polkadot,
+		Network::PolkadotAssetHub,
+		Network::PolkadotCollectives,
+		Network::PolkadotBridgeHub,
+		Network::PolkadotPeople,
+		Network::PolkadotCoretime,
+	];
+	let display_names: HashSet<_> = networks.iter().map(|n| n.display_name()).collect();
+	assert_eq!(
+		display_names.len(),
+		networks.len(),
+		"All display names must be unique"
+	);
+	let papi_ids: HashSet<_> = networks.iter().map(|n| n.papi_network_id()).collect();
+	assert_eq!(
+		papi_ids.len(),
+		networks.len(),
+		"All PAPI network IDs must be unique"
+	);
+}
+
+#[test]
+fn network_runtime_call_network_round_trips() {
+	let remark = PolkadotRuntimeCall::System(
+		crate::polkadot_relay::runtime_types::frame_system::pallet::Call::remark {
+			remark: b"test".to_vec(),
+		},
+	);
+	let network_call = NetworkRuntimeCall::Polkadot(remark);
+	assert_eq!(network_call.network(), Network::Polkadot);
+	assert!(!network_call.encode_call().is_empty());
+}
