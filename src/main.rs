@@ -20,10 +20,11 @@ enum Command {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
 	let args = Command::parse();
 	match args {
-		Command::BuildUpgrade(prefs) => build_upgrade(prefs).await,
-		Command::SubmitReferendum(prefs) => submit_referendum(prefs).await,
+		Command::BuildUpgrade(prefs) => build_upgrade(prefs).await?,
+		Command::SubmitReferendum(prefs) => submit_referendum(prefs).await?,
 	}
+	Ok(())
 }

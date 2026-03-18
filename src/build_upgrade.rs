@@ -1,3 +1,4 @@
+use anyhow::{bail, ensure, Context, Result};
 use crate::*;
 use clap::Parser as ClapParser;
 use std::fs;
@@ -64,26 +65,27 @@ pub(crate) struct UpgradeArgs {
 }
 
 // The sub-command's "main" function.
-pub(crate) async fn build_upgrade(prefs: UpgradeArgs) {
+pub(crate) async fn build_upgrade(prefs: UpgradeArgs) -> Result<()> {
 	// 0. Find out what to do.
 	let use_local = prefs.local;
-	let upgrade_details = parse_inputs(prefs);
+	let upgrade_details = parse_inputs(prefs)?;
 
 	// 1. Download all the Wasm files needed from the release pages (unless using local files).
 	if use_local {
 		println!("\nUsing local WASM files from {}\n", upgrade_details.directory);
 	} else {
-		download_runtimes(&upgrade_details).await;
+		download_runtimes(&upgrade_details).await?;
 	}
 
 	// 2. Construct the `authorize_upgrade` call on each chain.
-	let authorization_calls = generate_authorize_upgrade_calls(&upgrade_details);
+	let authorization_calls = generate_authorize_upgrade_calls(&upgrade_details)?;
 
 	// 3. Construct a `force_batch` call with everything.
-	let batch = construct_batch(&upgrade_details, authorization_calls).await;
+	let batch = construct_batch(&upgrade_details, authorization_calls)?;
 
 	// 4. Write this call as a file that can then be passed to `submit_referendum`.
-	write_batch(&upgrade_details, batch);
+	write_batch(&upgrade_details, batch)?;
+	Ok(())
 }
 
 fn chain_version(chain: Option<String>, default: Option<String>, only: bool) -> Option<String> {
@@ -104,14 +106,14 @@ fn chain_version(chain: Option<String>, default: Option<String>, only: bool) -> 
 }
 
 // Parse the CLI inputs and return a typed struct with all the details needed.
-pub(crate) fn parse_inputs(prefs: UpgradeArgs) -> UpgradeDetails {
+pub(crate) fn parse_inputs(prefs: UpgradeArgs) -> Result<UpgradeDetails> {
 	let mut networks = Vec::new();
 	let only = prefs.only;
 
 	if !only {
-		assert!(
+		ensure!(
 			prefs.relay_version.is_some(),
-			"relay-version must be specified unless using --only"
+			"--relay-version must be specified unless using --only"
 		);
 	}
 	let relay_version = chain_version(prefs.relay_version, None, only);
@@ -166,19 +168,20 @@ pub(crate) fn parse_inputs(prefs: UpgradeArgs) -> UpgradeDetails {
 			}
 			Network::Kusama
 		},
-		_ => panic!("`network` must be `polkadot` or `kusama`"),
+		other => bail!("`network` must be `polkadot` or `kusama`, got \"{}\"", other),
 	};
 
 	let additional = match prefs.additional {
 		Some(c) => {
-			let additional_bytes = get_proposal_bytes(c.clone());
+			let additional_bytes = get_proposal_bytes(c.clone())
+				.context("Failed to parse --additional call data")?;
 			match relay {
 				// This match isn't as intuitive post-ahm, as these are AH calls.
 				Network::Polkadot =>
 					Some(CallInfo::from_bytes(&additional_bytes, Network::PolkadotAssetHub)),
 				Network::Kusama =>
 					Some(CallInfo::from_bytes(&additional_bytes, Network::KusamaAssetHub)),
-				_ => panic!("`network` must be `polkadot` or `kusama`"),
+				_ => bail!("`network` must be `polkadot` or `kusama`"),
 			}
 		},
 		None => None,
@@ -200,16 +203,18 @@ pub(crate) fn parse_inputs(prefs: UpgradeArgs) -> UpgradeDetails {
 		format!("{directory}{network}-{version}.call")
 	};
 
-	make_version_directory(directory.as_str());
+	make_version_directory(directory.as_str())?;
 
-	UpgradeDetails { relay, networks, directory, output_file, additional }
+	Ok(UpgradeDetails { relay, networks, directory, output_file, additional })
 }
 
 // Create a directory into which to place runtime blobs and the final call data.
-fn make_version_directory(dir_name: &str) {
+fn make_version_directory(dir_name: &str) -> Result<()> {
 	if !Path::new(dir_name).is_dir() {
-		fs::create_dir_all(dir_name).expect("it makes a dir");
+		fs::create_dir_all(dir_name)
+			.with_context(|| format!("Failed to create directory: {}", dir_name))?;
 	}
+	Ok(())
 }
 
 // Convert a semver version (e.g. "1.2.3") to an integer runtime version (e.g. 1002003).
@@ -228,7 +233,7 @@ fn semver_to_intver(semver: &str) -> String {
 }
 
 // Fetch all the runtime Wasm blobs from a Fellowship release.
-async fn download_runtimes(upgrade_details: &UpgradeDetails) {
+async fn download_runtimes(upgrade_details: &UpgradeDetails) -> Result<()> {
 	// Relay Form
 	// https://github.com/polkadot-fellows/runtimes/releases/download/v1.0.0/polkadot_runtime-v1000000.compact.compressed.wasm
 	//
@@ -237,20 +242,7 @@ async fn download_runtimes(upgrade_details: &UpgradeDetails) {
 
 	println!("\nDownloading runtimes.\n");
 	for chain in &upgrade_details.networks {
-		let chain_name = match chain.network {
-			Network::Kusama => "kusama",
-			Network::Polkadot => "polkadot",
-			Network::KusamaAssetHub => "asset-hub-kusama",
-			Network::KusamaBridgeHub => "bridge-hub-kusama",
-			Network::KusamaPeople => "people-kusama",
-			Network::KusamaCoretime => "coretime-kusama",
-			Network::KusamaEncointer => "encointer-kusama",
-			Network::PolkadotAssetHub => "asset-hub-polkadot",
-			Network::PolkadotCollectives => "collectives-polkadot",
-			Network::PolkadotBridgeHub => "bridge-hub-polkadot",
-			Network::PolkadotPeople => "people-polkadot",
-			Network::PolkadotCoretime => "coretime-polkadot",
-		};
+		let chain_name = chain.network.release_chain_name();
 		let runtime_version = semver_to_intver(&chain.version);
 		let fname = format!("{chain_name}_runtime-v{runtime_version}.compact.compressed.wasm");
 
@@ -263,392 +255,261 @@ async fn download_runtimes(upgrade_details: &UpgradeDetails) {
 		let directory = &upgrade_details.directory;
 		let path_name = format!("{directory}{fname}");
 		println!("Downloading... {fname}");
-		let response = reqwest::get(download_url).await.expect("we need files to work");
-		if !response.status().is_success() {
-			panic!(
-				"Failed to download runtime: {} returned HTTP {}. Check that the release version exists at {}",
-				fname,
-				response.status(),
-				download_url,
-			);
-		}
-		let runtime = response.bytes().await.expect("need bytes");
+		let response = reqwest::get(download_url).await
+			.with_context(|| format!("Failed to download {}", fname))?;
+		ensure!(
+			response.status().is_success(),
+			"Failed to download runtime: {} returned HTTP {}. Check that the release version exists at {} and that this runtime is included in the release.",
+			fname,
+			response.status(),
+			download_url,
+		);
+		let runtime = response.bytes().await
+			.with_context(|| format!("Failed to read response bytes for {}", fname))?;
 		// todo: we could actually just hash the file, mutate UpgradeDetails, and not write it.
 		// saving it may be more convenient anyway though, since someone needs to upload it after
 		// the referendum enacts.
-		fs::write(path_name, runtime).expect("we can write");
+		fs::write(&path_name, runtime)
+			.with_context(|| format!("Failed to write runtime to {}", path_name))?;
 	}
+	Ok(())
+}
+
+// Read a runtime WASM blob from disk and return its blake2-256 hash.
+fn read_and_hash_runtime(directory: &str, chain: &VersionedNetwork) -> Result<[u8; 32]> {
+	let runtime_version = semver_to_intver(&chain.version);
+	let chain_name = chain.network.release_chain_name();
+	let fname = format!("{chain_name}_runtime-v{runtime_version}.compact.compressed.wasm");
+	let path = format!("{directory}{fname}");
+
+	let runtime = fs::read(&path)
+		.with_context(|| format!("Failed to read runtime file: {}", path))?;
+	let runtime_hash = blake2_256(&runtime);
+	println!("{} Runtime Hash: 0x{}", chain.network.display_name(), hex::encode(runtime_hash));
+	Ok(runtime_hash)
 }
 
 // Generate the `authorize_upgrade` calls that will need to execute on each parachain.
-fn generate_authorize_upgrade_calls(upgrade_details: &UpgradeDetails) -> Vec<CallInfo> {
+fn generate_authorize_upgrade_calls(upgrade_details: &UpgradeDetails) -> Result<Vec<CallInfo>> {
 	println!("\nGenerating parachain authorization calls. The runtime hashes are logged if you would like to verify them with srtool.\n");
 	let mut authorization_calls = Vec::new();
 	for chain in &upgrade_details.networks {
-		let runtime_version = semver_to_intver(&chain.version);
-		match chain.network {
+		let runtime_hash = read_and_hash_runtime(&upgrade_details.directory, chain)?;
+		let network_call = match chain.network {
 			Network::Kusama => {
 				use kusama_relay::runtime_types::frame_system::pallet::Call as SystemCall;
-				let path = format!(
-					"{}kusama_runtime-v{}.compact.compressed.wasm",
-					upgrade_details.directory, runtime_version
-				);
-				let runtime = fs::read(path).expect("Should give a valid file path");
-				let runtime_hash = blake2_256(&runtime);
-				println!("Kusama Relay Chain Runtime Hash: 0x{}", hex::encode(runtime_hash));
-
-				let call = CallInfo::from_runtime_call(NetworkRuntimeCall::Kusama(
-					KusamaRuntimeCall::System(SystemCall::authorize_upgrade {
-						code_hash: H256(runtime_hash),
-					}),
-				));
-				authorization_calls.push(call);
+				NetworkRuntimeCall::Kusama(KusamaRuntimeCall::System(
+					SystemCall::authorize_upgrade { code_hash: H256(runtime_hash) },
+				))
 			},
 			Network::KusamaAssetHub => {
 				use kusama_asset_hub::runtime_types::frame_system::pallet::Call;
-				let path = format!(
-					"{}asset-hub-kusama_runtime-v{}.compact.compressed.wasm",
-					upgrade_details.directory, runtime_version
-				);
-				let runtime = fs::read(path).expect("Should give a valid file path");
-				let runtime_hash = blake2_256(&runtime);
-				println!("Kusama Asset Hub Runtime Hash:   0x{}", hex::encode(runtime_hash));
-
-				let call = CallInfo::from_runtime_call(NetworkRuntimeCall::KusamaAssetHub(
-					KusamaAssetHubRuntimeCall::System(Call::authorize_upgrade {
-						code_hash: H256(runtime_hash),
-					}),
-				));
-				authorization_calls.push(call);
+				NetworkRuntimeCall::KusamaAssetHub(KusamaAssetHubRuntimeCall::System(
+					Call::authorize_upgrade { code_hash: H256(runtime_hash) },
+				))
 			},
 			Network::KusamaBridgeHub => {
 				use kusama_bridge_hub::runtime_types::frame_system::pallet::Call;
-				let path = format!(
-					"{}bridge-hub-kusama_runtime-v{}.compact.compressed.wasm",
-					upgrade_details.directory, runtime_version
-				);
-				let runtime = fs::read(path).expect("Should give a valid file path");
-				let runtime_hash = blake2_256(&runtime);
-				println!("Kusama Bridge Hub Runtime Hash:  0x{}", hex::encode(runtime_hash));
-
-				let call = CallInfo::from_runtime_call(NetworkRuntimeCall::KusamaBridgeHub(
-					KusamaBridgeHubRuntimeCall::System(Call::authorize_upgrade {
-						code_hash: H256(runtime_hash),
-					}),
-				));
-				authorization_calls.push(call);
+				NetworkRuntimeCall::KusamaBridgeHub(KusamaBridgeHubRuntimeCall::System(
+					Call::authorize_upgrade { code_hash: H256(runtime_hash) },
+				))
 			},
 			Network::KusamaPeople => {
 				use kusama_people::runtime_types::frame_system::pallet::Call;
-				let path = format!(
-					"{}people-kusama_runtime-v{}.compact.compressed.wasm",
-					upgrade_details.directory, runtime_version
-				);
-				let runtime = fs::read(path).expect("Should give a valid file path");
-				let runtime_hash = blake2_256(&runtime);
-				println!("Kusama People Runtime Hash:      0x{}", hex::encode(runtime_hash));
-
-				let call = CallInfo::from_runtime_call(NetworkRuntimeCall::KusamaPeople(
-					KusamaPeopleRuntimeCall::System(Call::authorize_upgrade {
-						code_hash: H256(runtime_hash),
-					}),
-				));
-				authorization_calls.push(call);
+				NetworkRuntimeCall::KusamaPeople(KusamaPeopleRuntimeCall::System(
+					Call::authorize_upgrade { code_hash: H256(runtime_hash) },
+				))
 			},
 			Network::KusamaCoretime => {
 				use kusama_coretime::runtime_types::frame_system::pallet::Call;
-				let path = format!(
-					"{}coretime-kusama_runtime-v{}.compact.compressed.wasm",
-					upgrade_details.directory, runtime_version
-				);
-				let runtime = fs::read(path).expect("Should give a valid file path");
-				let runtime_hash = blake2_256(&runtime);
-				println!("Kusama Coretime Runtime Hash:    0x{}", hex::encode(runtime_hash));
-
-				let call = CallInfo::from_runtime_call(NetworkRuntimeCall::KusamaCoretime(
-					KusamaCoretimeRuntimeCall::System(Call::authorize_upgrade {
-						code_hash: H256(runtime_hash),
-					}),
-				));
-				authorization_calls.push(call);
+				NetworkRuntimeCall::KusamaCoretime(KusamaCoretimeRuntimeCall::System(
+					Call::authorize_upgrade { code_hash: H256(runtime_hash) },
+				))
 			},
 			Network::KusamaEncointer => {
 				use kusama_encointer::runtime_types::frame_system::pallet::Call;
-				let path = format!(
-					"{}encointer-kusama_runtime-v{}.compact.compressed.wasm",
-					upgrade_details.directory, runtime_version
-				);
-				let runtime = fs::read(path).expect("Should give a valid file path");
-				let runtime_hash = blake2_256(&runtime);
-				println!("Kusama Encointer Runtime Hash:   0x{}", hex::encode(runtime_hash));
-
-				let call = CallInfo::from_runtime_call(NetworkRuntimeCall::KusamaEncointer(
-					KusamaEncointerRuntimeCall::System(Call::authorize_upgrade {
-						code_hash: H256(runtime_hash),
-					}),
-				));
-				authorization_calls.push(call);
+				NetworkRuntimeCall::KusamaEncointer(KusamaEncointerRuntimeCall::System(
+					Call::authorize_upgrade { code_hash: H256(runtime_hash) },
+				))
 			},
 			Network::Polkadot => {
 				use polkadot_relay::runtime_types::frame_system::pallet::Call;
-				let path = format!(
-					"{}polkadot_runtime-v{}.compact.compressed.wasm",
-					upgrade_details.directory, runtime_version
-				);
-				let runtime = fs::read(path).expect("Should give a valid file path");
-				let runtime_hash = blake2_256(&runtime);
-				println!("Polkadot Relay Chain Runtime Hash: 0x{}", hex::encode(runtime_hash));
-
-				let call = CallInfo::from_runtime_call(NetworkRuntimeCall::Polkadot(
-					PolkadotRuntimeCall::System(Call::authorize_upgrade {
-						code_hash: H256(runtime_hash),
-					}),
-				));
-				authorization_calls.push(call);
+				NetworkRuntimeCall::Polkadot(PolkadotRuntimeCall::System(
+					Call::authorize_upgrade { code_hash: H256(runtime_hash) },
+				))
 			},
 			Network::PolkadotAssetHub => {
 				use polkadot_asset_hub::runtime_types::frame_system::pallet::Call;
-				let path = format!(
-					"{}asset-hub-polkadot_runtime-v{}.compact.compressed.wasm",
-					upgrade_details.directory, runtime_version
-				);
-				let runtime = fs::read(path).expect("Should give a valid file path");
-				let runtime_hash = blake2_256(&runtime);
-				println!("Polkadot Asset Hub Runtime Hash:   0x{}", hex::encode(runtime_hash));
-
-				let call = CallInfo::from_runtime_call(NetworkRuntimeCall::PolkadotAssetHub(
-					PolkadotAssetHubRuntimeCall::System(Call::authorize_upgrade {
-						code_hash: H256(runtime_hash),
-					}),
-				));
-				authorization_calls.push(call);
+				NetworkRuntimeCall::PolkadotAssetHub(PolkadotAssetHubRuntimeCall::System(
+					Call::authorize_upgrade { code_hash: H256(runtime_hash) },
+				))
 			},
 			Network::PolkadotCollectives => {
 				use polkadot_collectives::runtime_types::frame_system::pallet::Call;
-				let path = format!(
-					"{}collectives-polkadot_runtime-v{}.compact.compressed.wasm",
-					upgrade_details.directory, runtime_version
-				);
-				let runtime = fs::read(path).expect("Should give a valid file path");
-				let runtime_hash = blake2_256(&runtime);
-				println!("Polkadot Collectives Runtime Hash: 0x{}", hex::encode(runtime_hash));
-
-				let call = CallInfo::from_runtime_call(NetworkRuntimeCall::PolkadotCollectives(
-					CollectivesRuntimeCall::System(Call::authorize_upgrade {
-						code_hash: H256(runtime_hash),
-					}),
-				));
-				authorization_calls.push(call);
+				NetworkRuntimeCall::PolkadotCollectives(CollectivesRuntimeCall::System(
+					Call::authorize_upgrade { code_hash: H256(runtime_hash) },
+				))
 			},
 			Network::PolkadotBridgeHub => {
 				use polkadot_bridge_hub::runtime_types::frame_system::pallet::Call;
-				let path = format!(
-					"{}bridge-hub-polkadot_runtime-v{}.compact.compressed.wasm",
-					upgrade_details.directory, runtime_version
-				);
-				let runtime = fs::read(path).expect("Should give a valid file path");
-				let runtime_hash = blake2_256(&runtime);
-				println!("Polkadot Bridge Hub Runtime Hash:  0x{}", hex::encode(runtime_hash));
-
-				let call = CallInfo::from_runtime_call(NetworkRuntimeCall::PolkadotBridgeHub(
-					PolkadotBridgeHubRuntimeCall::System(Call::authorize_upgrade {
-						code_hash: H256(runtime_hash),
-					}),
-				));
-				authorization_calls.push(call);
+				NetworkRuntimeCall::PolkadotBridgeHub(PolkadotBridgeHubRuntimeCall::System(
+					Call::authorize_upgrade { code_hash: H256(runtime_hash) },
+				))
 			},
 			Network::PolkadotPeople => {
 				use polkadot_people::runtime_types::frame_system::pallet::Call;
-				let path = format!(
-					"{}people-polkadot_runtime-v{}.compact.compressed.wasm",
-					upgrade_details.directory, runtime_version
-				);
-				let runtime = fs::read(path).expect("Should give a valid file path");
-				let runtime_hash = blake2_256(&runtime);
-				println!("Polkadot People Runtime Hash:      0x{}", hex::encode(runtime_hash));
-
-				let call = CallInfo::from_runtime_call(NetworkRuntimeCall::PolkadotPeople(
-					PolkadotPeopleRuntimeCall::System(Call::authorize_upgrade {
-						code_hash: H256(runtime_hash),
-					}),
-				));
-				authorization_calls.push(call);
+				NetworkRuntimeCall::PolkadotPeople(PolkadotPeopleRuntimeCall::System(
+					Call::authorize_upgrade { code_hash: H256(runtime_hash) },
+				))
 			},
 			Network::PolkadotCoretime => {
 				use polkadot_coretime::runtime_types::frame_system::pallet::Call;
-				let path = format!(
-					"{}coretime-polkadot_runtime-v{}.compact.compressed.wasm",
-					upgrade_details.directory, runtime_version
-				);
-				let runtime = fs::read(path).expect("Should give a valid file path");
-				let runtime_hash = blake2_256(&runtime);
-				println!("Polkadot Coretime Runtime Hash:    0x{}", hex::encode(runtime_hash));
-
-				let call = CallInfo::from_runtime_call(NetworkRuntimeCall::PolkadotCoretime(
-					PolkadotCoretimeRuntimeCall::System(Call::authorize_upgrade {
-						code_hash: H256(runtime_hash),
-					}),
-				));
-				authorization_calls.push(call);
+				NetworkRuntimeCall::PolkadotCoretime(PolkadotCoretimeRuntimeCall::System(
+					Call::authorize_upgrade { code_hash: H256(runtime_hash) },
+				))
 			},
 		};
+		authorization_calls.push(CallInfo::from_runtime_call(network_call));
 	}
-	authorization_calls
+	Ok(authorization_calls)
 }
 
 // Take the parachain authorization calls and the Relay Chain call, and batch them into one call
 // that can be executed on the Relay Chain. The call returned here is the proposal to put to
 // referendum.
-async fn construct_batch(upgrade_details: &UpgradeDetails, calls: Vec<CallInfo>) -> CallInfo {
+fn construct_batch(upgrade_details: &UpgradeDetails, calls: Vec<CallInfo>) -> Result<CallInfo> {
 	println!("\nBatching calls.");
 	match upgrade_details.relay {
-		Network::Kusama => construct_kusama_batch(calls, upgrade_details.additional.clone()).await,
-		Network::Polkadot =>
-			construct_polkadot_batch(calls, upgrade_details.additional.clone()).await,
-		_ => panic!("Not a Relay Chain"),
+		Network::Kusama => construct_kusama_batch(calls, upgrade_details.additional.clone()),
+		Network::Polkadot => construct_polkadot_batch(calls, upgrade_details.additional.clone()),
+		Network::KusamaAssetHub
+		| Network::KusamaBridgeHub
+		| Network::KusamaPeople
+		| Network::KusamaCoretime
+		| Network::KusamaEncointer
+		| Network::PolkadotAssetHub
+		| Network::PolkadotCollectives
+		| Network::PolkadotBridgeHub
+		| Network::PolkadotPeople
+		| Network::PolkadotCoretime => bail!("Expected relay network, got {:?}", upgrade_details.relay),
 	}
 }
 
-// Construct the batch needed on Kusama.
-async fn construct_kusama_batch(calls: Vec<CallInfo>, additional: Option<CallInfo>) -> CallInfo {
+fn construct_kusama_batch(calls: Vec<CallInfo>, additional: Option<CallInfo>) -> Result<CallInfo> {
 	use kusama_asset_hub::runtime_types::pallet_utility::pallet::Call as UtilityCall;
 
 	let mut batch_calls = Vec::new();
 	for auth in calls {
 		if matches!(auth.network, Network::KusamaAssetHub) {
-			batch_calls.push(auth.get_kusama_asset_hub_call().expect("We just constructed this"));
+			batch_calls.push(auth.get_kusama_asset_hub_call().expect("just constructed"));
 		} else {
-			let send_auth = send_as_superuser_kusama(&auth).await;
-			batch_calls.push(send_auth);
+			batch_calls.push(send_as_superuser_kusama(&auth));
 		}
 	}
 	if let Some(a) = additional {
 		batch_calls.push(a.get_kusama_asset_hub_call().expect("kusama call"))
 	}
-	match &batch_calls.len() {
-		0 => panic!("no calls"),
+	ensure!(!batch_calls.is_empty(), "No calls to batch");
+	Ok(match batch_calls.len() {
 		1 =>
 			CallInfo::from_runtime_call(NetworkRuntimeCall::KusamaAssetHub(batch_calls[0].clone())),
 		_ => CallInfo::from_runtime_call(NetworkRuntimeCall::KusamaAssetHub(
 			KusamaAssetHubRuntimeCall::Utility(UtilityCall::force_batch { calls: batch_calls }),
 		)),
-	}
+	})
 }
 
-// Construct the batch needed on Polkadot.
-async fn construct_polkadot_batch(calls: Vec<CallInfo>, additional: Option<CallInfo>) -> CallInfo {
+fn construct_polkadot_batch(calls: Vec<CallInfo>, additional: Option<CallInfo>) -> Result<CallInfo> {
 	use polkadot_asset_hub::runtime_types::pallet_utility::pallet::Call as UtilityCall;
 
 	let mut batch_calls = Vec::new();
 	for auth in calls {
 		if matches!(auth.network, Network::PolkadotAssetHub) {
-			batch_calls.push(auth.get_polkadot_asset_hub_call().expect("We just constructed this"));
+			batch_calls.push(auth.get_polkadot_asset_hub_call().expect("just constructed"));
 		} else {
-			let send_auth = send_as_superuser_polkadot(&auth).await;
-			batch_calls.push(send_auth);
+			batch_calls.push(send_as_superuser_polkadot(&auth));
 		}
 	}
 	if let Some(a) = additional {
 		batch_calls.push(a.get_polkadot_asset_hub_call().expect("polkadot call"))
 	}
-	match &batch_calls.len() {
-		0 => panic!("no calls"),
+	ensure!(!batch_calls.is_empty(), "No calls to batch");
+	Ok(match batch_calls.len() {
 		1 => CallInfo::from_runtime_call(NetworkRuntimeCall::PolkadotAssetHub(
 			batch_calls[0].clone(),
 		)),
 		_ => CallInfo::from_runtime_call(NetworkRuntimeCall::PolkadotAssetHub(
 			PolkadotAssetHubRuntimeCall::Utility(UtilityCall::force_batch { calls: batch_calls }),
 		)),
-	}
-}
-
-// Take a call, which includes its intended destination, and wrap it in XCM instructions to `send`
-// it from Kusama Asset Hub, with `Root` origin, and have it execute on its destination.
-async fn send_as_superuser_kusama(auth: &CallInfo) -> KusamaAssetHubRuntimeCall {
-	use kusama_asset_hub::runtime_types::{
-		pallet_xcm::pallet::Call as XcmCall,
-		staging_xcm::v5::{
-			junction::Junction::Parachain, junctions::Junctions::Here, junctions::Junctions::X1,
-			location::Location, Instruction, Xcm,
-		},
-		xcm::{
-			double_encoded::DoubleEncoded, v3::OriginKind, v3::WeightLimit, VersionedLocation,
-			VersionedXcm::V5,
-		},
-	};
-
-	let location = match auth.network.get_para_id() {
-		Ok(para_id) => Location { parents: 1, interior: X1([Parachain(para_id)]) },
-		Err(_) => Location { parents: 1, interior: Here },
-	};
-
-	KusamaAssetHubRuntimeCall::PolkadotXcm(XcmCall::send {
-		dest: Box::new(VersionedLocation::V5(location)),
-		message: Box::new(V5(Xcm(vec![
-			Instruction::UnpaidExecution {
-				weight_limit: WeightLimit::Unlimited,
-				check_origin: None,
-			},
-			Instruction::Transact {
-				origin_kind: OriginKind::Superuser,
-				fallback_max_weight: None,
-				call: DoubleEncoded { encoded: auth.encoded.clone() },
-			},
-		]))),
 	})
 }
 
-// Take a call, which includes its intended destination, and wrap it in XCM instructions to `send`
-// it from the Polkadot Relay Chain, with `Root` origin, and have it execute on its destination.
-async fn send_as_superuser_polkadot(auth: &CallInfo) -> PolkadotAssetHubRuntimeCall {
-	use polkadot_asset_hub::runtime_types::{
-		pallet_xcm::pallet::Call as XcmCall,
-		staging_xcm::v5::{
-			junction::Junction::Parachain, junctions::Junctions::Here, junctions::Junctions::X1,
-			location::Location, Instruction, Xcm,
-		},
-		xcm::{
-			double_encoded::DoubleEncoded, v3::OriginKind, v3::WeightLimit, VersionedLocation,
-			VersionedXcm::V5,
-		},
-	};
+macro_rules! impl_send_as_superuser {
+	($fn_name:ident, $runtime_mod:path, $runtime_call:ident) => {
+		fn $fn_name(auth: &CallInfo) -> $runtime_call {
+			use $runtime_mod::{
+				pallet_xcm::pallet::Call as XcmCall,
+				staging_xcm::v5::{
+					junction::Junction::Parachain, junctions::Junctions::Here,
+					junctions::Junctions::X1, location::Location, Instruction, Xcm,
+				},
+				xcm::{
+					double_encoded::DoubleEncoded, v3::OriginKind, v3::WeightLimit,
+					VersionedLocation, VersionedXcm::V5,
+				},
+			};
 
-	let location = match auth.network.get_para_id() {
-		Ok(para_id) => Location { parents: 1, interior: X1([Parachain(para_id)]) },
-		Err(_) => Location { parents: 1, interior: Here },
-	};
+			let location = match auth.network.get_para_id() {
+				Ok(para_id) => Location { parents: 1, interior: X1([Parachain(para_id)]) },
+				Err(_) => Location { parents: 1, interior: Here },
+			};
 
-	PolkadotAssetHubRuntimeCall::PolkadotXcm(XcmCall::send {
-		dest: Box::new(VersionedLocation::V5(location)),
-		message: Box::new(V5(Xcm(vec![
-			Instruction::UnpaidExecution {
-				weight_limit: WeightLimit::Unlimited,
-				check_origin: None,
-			},
-			Instruction::Transact {
-				origin_kind: OriginKind::Superuser,
-				fallback_max_weight: None,
-				call: DoubleEncoded { encoded: auth.encoded.clone() },
-			},
-		]))),
-	})
+			$runtime_call::PolkadotXcm(XcmCall::send {
+				dest: Box::new(VersionedLocation::V5(location)),
+				message: Box::new(V5(Xcm(vec![
+					Instruction::UnpaidExecution {
+						weight_limit: WeightLimit::Unlimited,
+						check_origin: None,
+					},
+					Instruction::Transact {
+						origin_kind: OriginKind::Superuser,
+						fallback_max_weight: None,
+						call: DoubleEncoded { encoded: auth.encoded.clone() },
+					},
+				]))),
+			})
+		}
+	};
 }
+
+impl_send_as_superuser!(
+	send_as_superuser_kusama,
+	kusama_asset_hub::runtime_types,
+	KusamaAssetHubRuntimeCall
+);
+impl_send_as_superuser!(
+	send_as_superuser_polkadot,
+	polkadot_asset_hub::runtime_types,
+	PolkadotAssetHubRuntimeCall
+);
 
 // Write the call needed to disk and provide instructions to the user about how to propose it.
-fn write_batch(upgrade_details: &UpgradeDetails, batch: CallInfo) {
+fn write_batch(upgrade_details: &UpgradeDetails, batch: CallInfo) -> Result<()> {
 	let fname = upgrade_details.output_file.as_str();
 	let mut info_to_write = "0x".to_owned();
 	info_to_write.push_str(hex::encode(batch.encoded).as_str());
-	fs::write(fname, info_to_write).expect("it should write");
+	fs::write(fname, info_to_write)
+		.with_context(|| format!("Failed to write call data to {}", fname))?;
 
 	println!("\nSuccess! The call data was written to {fname}");
 	println!("To submit this as a referendum in OpenGov, run:");
 	let network = match upgrade_details.relay {
 		Network::Kusama => "kusama",
 		Network::Polkadot => "polkadot",
-		_ => panic!("not a relay network"),
+		_ => bail!("Expected relay network (polkadot or kusama)"),
 	};
 	println!("\nopengov-cli submit-referendum \\");
 	println!("    --proposal \"{fname}\" \\");
 	println!("    --network \"{network}\" --track <\"root\" or \"whitelistedcaller\">");
+	Ok(())
 }

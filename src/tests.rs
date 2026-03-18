@@ -2,14 +2,14 @@ use crate::get_proposal_bytes;
 use crate::polkadot_asset_hub::runtime_types::frame_system::pallet::Call as PolkadotAssetHubSystemCall;
 use crate::polkadot_relay::runtime_types::frame_system::pallet::Call as PolkadotRelaySystemCall;
 use crate::{
-	build_upgrade, submit_referendum::generate_calls, CallInfo, CallOrHash,
+	build_upgrade, submit_referendum::generate_calls, CallInfo, PreimageOrHash,
 	KusamaAssetHubOpenGovOrigin, Network, NetworkRuntimeCall, PolkadotAssetHubOpenGovOrigin,
 	PolkadotAssetHubRuntimeCall, PolkadotRuntimeCall, ProposalDetails, UpgradeArgs,
 	VersionedNetwork,
 };
 
 fn polkadot_whitelist_remark_user_input() -> ProposalDetails {
-	use crate::DispatchTimeWrapper::*;
+	use crate::EnactmentTime::*;
 	use crate::NetworkTrack::*;
 	use crate::Output::*;
 	ProposalDetails {
@@ -26,7 +26,7 @@ fn polkadot_whitelist_remark_user_input() -> ProposalDetails {
 }
 
 fn polkadot_staking_validator_user_input() -> ProposalDetails {
-	use crate::DispatchTimeWrapper::*;
+	use crate::EnactmentTime::*;
 	use crate::NetworkTrack::*;
 	use crate::Output::*;
 	ProposalDetails {
@@ -43,7 +43,7 @@ fn polkadot_staking_validator_user_input() -> ProposalDetails {
 }
 
 fn polkadot_root_remark_user_input() -> ProposalDetails {
-	use crate::DispatchTimeWrapper::*;
+	use crate::EnactmentTime::*;
 	use crate::NetworkTrack::*;
 	use crate::Output::*;
 	ProposalDetails {
@@ -60,7 +60,7 @@ fn polkadot_root_remark_user_input() -> ProposalDetails {
 }
 
 fn kusama_whitelist_remark_user_input() -> ProposalDetails {
-	use crate::DispatchTimeWrapper::*;
+	use crate::EnactmentTime::*;
 	use crate::NetworkTrack::*;
 	use crate::Output::*;
 	ProposalDetails {
@@ -94,7 +94,7 @@ fn kusama_whitelist_polkadot_fellowship_user_input() -> ProposalDetails {
 }
 
 fn kusama_staking_validator_user_input() -> ProposalDetails {
-	use crate::DispatchTimeWrapper::*;
+	use crate::EnactmentTime::*;
 	use crate::NetworkTrack::*;
 	use crate::Output::*;
 	ProposalDetails {
@@ -111,7 +111,7 @@ fn kusama_staking_validator_user_input() -> ProposalDetails {
 }
 
 fn kusama_root_remark_user_input() -> ProposalDetails {
-	use crate::DispatchTimeWrapper::*;
+	use crate::EnactmentTime::*;
 	use crate::NetworkTrack::*;
 	use crate::Output::*;
 	ProposalDetails {
@@ -128,7 +128,7 @@ fn kusama_root_remark_user_input() -> ProposalDetails {
 }
 
 fn limited_length_user_input() -> ProposalDetails {
-	use crate::DispatchTimeWrapper::*;
+	use crate::EnactmentTime::*;
 	use crate::NetworkTrack::*;
 	use crate::Output::*;
 	ProposalDetails {
@@ -216,7 +216,7 @@ fn upgrade_args_with_additional() -> UpgradeArgs {
 #[test]
 fn call_info_from_bytes_works() {
 	let proposal_details = polkadot_whitelist_remark_user_input();
-	let proposal_bytes = get_proposal_bytes(proposal_details.proposal);
+	let proposal_bytes = get_proposal_bytes(proposal_details.proposal).unwrap();
 	let proposal_call_info = CallInfo::from_bytes(&proposal_bytes, Network::Polkadot);
 
 	let remark_to_verify = PolkadotRuntimeCall::System(PolkadotRelaySystemCall::remark {
@@ -265,7 +265,7 @@ fn call_info_from_runtime_call_works() {
 #[tokio::test]
 async fn it_starts_polkadot_non_fellowship_referenda_correctly() {
 	let proposal_details = polkadot_staking_validator_user_input();
-	let calls = generate_calls(&proposal_details).await;
+	let calls = generate_calls(&proposal_details).unwrap();
 
 	let public_preimage =
 		hex::decode("0x05000c070ac8".trim_start_matches("0x")).expect("Valid call");
@@ -277,12 +277,12 @@ async fn it_starts_polkadot_non_fellowship_referenda_correctly() {
 	assert!(calls.preimage_for_public_referendum.is_some(), "it must generate this call");
 	if let Some((coh, length)) = calls.preimage_for_public_referendum {
 		match coh {
-			CallOrHash::Call(public_preimage_generated) => {
+			PreimageOrHash::Call(public_preimage_generated) => {
 				let call_info = CallInfo::from_runtime_call(public_preimage_generated);
 				assert_eq!(call_info.encoded, public_preimage);
 				assert_eq!(length, 6u32);
 			},
-			CallOrHash::Hash(_) => panic!("call length within the limit"),
+			PreimageOrHash::Hash(_) => panic!("call length within the limit"),
 		}
 	}
 
@@ -297,7 +297,7 @@ async fn it_starts_polkadot_non_fellowship_referenda_correctly() {
 async fn it_starts_polkadot_fellowship_referenda_correctly() {
 	// Fellowship is on Collectives, send XCM to Asset Hub to whitelist.
 	let proposal_details = polkadot_whitelist_remark_user_input();
-	let calls = generate_calls(&proposal_details).await;
+	let calls = generate_calls(&proposal_details).unwrap();
 
 	let public_preimage = hex::decode(
 		"0x050060400300004c6f70656e676f762d7375626d69742074657374".trim_start_matches("0x"),
@@ -313,12 +313,12 @@ async fn it_starts_polkadot_fellowship_referenda_correctly() {
 	assert!(calls.preimage_for_public_referendum.is_some(), "it must generate this call");
 	if let Some((coh, length)) = calls.preimage_for_public_referendum {
 		match coh {
-			CallOrHash::Call(public_preimage_generated) => {
+			PreimageOrHash::Call(public_preimage_generated) => {
 				let call_info = CallInfo::from_runtime_call(public_preimage_generated);
 				assert_eq!(call_info.encoded, public_preimage);
 				assert_eq!(length, 27u32);
 			},
-			CallOrHash::Hash(_) => panic!("call length within the limit"),
+			PreimageOrHash::Hash(_) => panic!("call length within the limit"),
 		}
 	}
 
@@ -338,7 +338,7 @@ async fn it_starts_polkadot_fellowship_referenda_correctly() {
 #[tokio::test]
 async fn it_starts_polkadot_root_referenda_correctly() {
 	let proposal_details = polkadot_root_remark_user_input();
-	let calls = generate_calls(&proposal_details).await;
+	let calls = generate_calls(&proposal_details).unwrap();
 
 	let public_preimage = hex::decode(
 		"0x05005800004c6f70656e676f762d7375626d69742074657374".trim_start_matches("0x"),
@@ -352,12 +352,12 @@ async fn it_starts_polkadot_root_referenda_correctly() {
 	assert!(calls.preimage_for_public_referendum.is_some(), "it must generate this call");
 	if let Some((coh, length)) = calls.preimage_for_public_referendum {
 		match coh {
-			CallOrHash::Call(public_preimage_generated) => {
+			PreimageOrHash::Call(public_preimage_generated) => {
 				let call_info = CallInfo::from_runtime_call(public_preimage_generated);
 				assert_eq!(call_info.encoded, public_preimage);
 				assert_eq!(length, 25u32);
 			},
-			CallOrHash::Hash(_) => panic!("call length within the limit"),
+			PreimageOrHash::Hash(_) => panic!("call length within the limit"),
 		}
 	}
 
@@ -371,7 +371,7 @@ async fn it_starts_polkadot_root_referenda_correctly() {
 #[tokio::test]
 async fn it_starts_kusama_non_fellowship_referenda_correctly() {
 	let proposal_details = kusama_staking_validator_user_input();
-	let calls = generate_calls(&proposal_details).await;
+	let calls = generate_calls(&proposal_details).unwrap();
 
 	let public_preimage =
 		hex::decode("0x06000c060ac8".trim_start_matches("0x")).expect("Valid call");
@@ -383,12 +383,12 @@ async fn it_starts_kusama_non_fellowship_referenda_correctly() {
 	assert!(calls.preimage_for_public_referendum.is_some(), "it must generate this call");
 	if let Some((coh, length)) = calls.preimage_for_public_referendum {
 		match coh {
-			CallOrHash::Call(public_preimage_generated) => {
+			PreimageOrHash::Call(public_preimage_generated) => {
 				let call_info = CallInfo::from_runtime_call(public_preimage_generated);
 				assert_eq!(call_info.encoded, public_preimage);
 				assert_eq!(length, 6u32);
 			},
-			CallOrHash::Hash(_) => panic!("call length within the limit"),
+			PreimageOrHash::Hash(_) => panic!("call length within the limit"),
 		}
 	}
 
@@ -402,7 +402,7 @@ async fn it_starts_kusama_non_fellowship_referenda_correctly() {
 #[tokio::test]
 async fn it_starts_kusama_fellowship_referenda_correctly() {
 	let proposal_details = kusama_whitelist_remark_user_input();
-	let calls = generate_calls(&proposal_details).await;
+	let calls = generate_calls(&proposal_details).unwrap();
 
 	// On Kusama, the fellowship is on the Relay Chain and uses inline calls,
 	// so preimage_for_whitelist_call is None. The fellowship referendum is submitted
@@ -423,12 +423,12 @@ async fn it_starts_kusama_fellowship_referenda_correctly() {
 	assert!(calls.preimage_for_public_referendum.is_some(), "it must generate this call");
 	if let Some((coh, length)) = calls.preimage_for_public_referendum {
 		match coh {
-			CallOrHash::Call(public_preimage_generated) => {
+			PreimageOrHash::Call(public_preimage_generated) => {
 				let call_info = CallInfo::from_runtime_call(public_preimage_generated);
 				assert_eq!(call_info.encoded, public_preimage);
 				assert_eq!(length, 27u32);
 			},
-			CallOrHash::Hash(_) => panic!("call length within the limit"),
+			PreimageOrHash::Hash(_) => panic!("call length within the limit"),
 		}
 	}
 
@@ -487,7 +487,7 @@ async fn it_starts_polkadot_fellowship_whitelisted_kusama_referenda_correctly() 
 #[tokio::test]
 async fn it_starts_kusama_root_referenda_correctly() {
 	let proposal_details = kusama_root_remark_user_input();
-	let calls = generate_calls(&proposal_details).await;
+	let calls = generate_calls(&proposal_details).unwrap();
 
 	let public_preimage = hex::decode(
 		"0x06005800004c6f70656e676f762d7375626d69742074657374".trim_start_matches("0x"),
@@ -501,12 +501,12 @@ async fn it_starts_kusama_root_referenda_correctly() {
 	assert!(calls.preimage_for_public_referendum.is_some(), "it must generate this call");
 	if let Some((coh, length)) = calls.preimage_for_public_referendum {
 		match coh {
-			CallOrHash::Call(public_preimage_generated) => {
+			PreimageOrHash::Call(public_preimage_generated) => {
 				let call_info = CallInfo::from_runtime_call(public_preimage_generated);
 				assert_eq!(call_info.encoded, public_preimage);
 				assert_eq!(length, 25u32);
 			},
-			CallOrHash::Hash(_) => panic!("call length within the limit"),
+			PreimageOrHash::Hash(_) => panic!("call length within the limit"),
 		}
 	}
 
@@ -520,7 +520,7 @@ async fn it_starts_kusama_root_referenda_correctly() {
 #[test]
 fn only_relay_chain() {
 	let args = upgrade_args_for_only_relay();
-	let details = build_upgrade::parse_inputs(args);
+	let details = build_upgrade::parse_inputs(args).unwrap();
 	assert_eq!(details.relay, Network::Polkadot);
 	let expected_networks =
 		vec![VersionedNetwork { network: Network::Polkadot, version: String::from("1.2.0") }];
@@ -531,7 +531,7 @@ fn only_relay_chain() {
 #[test]
 fn only_asset_hub() {
 	let args = upgrade_args_for_only_asset_hub();
-	let details = build_upgrade::parse_inputs(args);
+	let details = build_upgrade::parse_inputs(args).unwrap();
 	assert_eq!(details.relay, Network::Polkadot);
 	let expected_networks = vec![VersionedNetwork {
 		network: Network::PolkadotAssetHub,
@@ -544,7 +544,7 @@ fn only_asset_hub() {
 #[test]
 fn upgrade_everything_works_with_just_relay_version() {
 	let args = upgrade_args_for_all();
-	let details = build_upgrade::parse_inputs(args);
+	let details = build_upgrade::parse_inputs(args).unwrap();
 	assert_eq!(details.relay, Network::Polkadot);
 	let expected_networks = vec![
 		VersionedNetwork { network: Network::Polkadot, version: String::from("1.2.0") },
@@ -561,7 +561,7 @@ fn upgrade_everything_works_with_just_relay_version() {
 #[test]
 fn additional_call_decodes_correctly() {
 	let args = upgrade_args_with_additional();
-	let details = build_upgrade::parse_inputs(args);
+	let details = build_upgrade::parse_inputs(args).unwrap();
 
 	assert!(details.additional.is_some(), "additional should be set");
 	let additional = details.additional.unwrap();
@@ -582,7 +582,7 @@ fn additional_call_decodes_correctly() {
 #[test]
 fn it_creates_constrained_print_output() {
 	let proposal_details = limited_length_user_input();
-	let proposal_bytes = get_proposal_bytes(proposal_details.proposal);
+	let proposal_bytes = get_proposal_bytes(proposal_details.proposal).unwrap();
 	let proposal_call_info = CallInfo::from_bytes(&proposal_bytes, Network::Polkadot);
 	let (coh, length) = proposal_call_info.create_print_output(proposal_details.output_len_limit);
 
@@ -593,8 +593,8 @@ fn it_creates_constrained_print_output() {
 	.expect("Valid hash");
 
 	match coh {
-		CallOrHash::Call(_) => panic!("this should not have a call"),
-		CallOrHash::Hash(h) => {
+		PreimageOrHash::Call(_) => panic!("this should not have a call"),
+		PreimageOrHash::Hash(h) => {
 			assert_eq!(h, &expected_hash[..]);
 		},
 	}

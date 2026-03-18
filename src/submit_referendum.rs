@@ -1,3 +1,4 @@
+use anyhow::{bail, Context, Result};
 use crate::*;
 use clap::Parser as ClapParser;
 use std::fs;
@@ -49,18 +50,19 @@ pub(crate) struct ReferendumArgs {
 }
 
 // The sub-command's "main" function.
-pub(crate) async fn submit_referendum(prefs: ReferendumArgs) {
+pub(crate) async fn submit_referendum(prefs: ReferendumArgs) -> Result<()> {
 	// Find out what the user wants to do.
-	let proposal_details = parse_inputs(prefs);
+	let proposal_details = parse_inputs(prefs)?;
 	// Generate the calls necessary.
-	let calls = generate_calls(&proposal_details).await;
+	let calls = generate_calls(&proposal_details)?;
 	// Tell the user what to do.
 	deliver_output(proposal_details, calls);
+	Ok(())
 }
 
 // Parse the CLI inputs and return a typed struct with all the details needed.
-fn parse_inputs(prefs: ReferendumArgs) -> ProposalDetails {
-	use DispatchTimeWrapper::*;
+fn parse_inputs(prefs: ReferendumArgs) -> Result<ProposalDetails> {
+	use EnactmentTime::*;
 	use NetworkTrack::*;
 	use Output::*;
 
@@ -82,7 +84,7 @@ fn parse_inputs(prefs: ReferendumArgs) -> ProposalDetails {
 				Polkadot(PolkadotAssetHubOpenGovOrigin::ReferendumKiller),
 			"referendum-canceller" | "referendumcanceller" =>
 				Polkadot(PolkadotAssetHubOpenGovOrigin::ReferendumCanceller),
-			_ => panic!("Unsupported track! Tracks should be in the form `general-admin` or `generaladmin`."),
+			other => bail!("Unsupported Polkadot track: \"{}\". Tracks should be in the form `general-admin` or `generaladmin`.", other),
 		},
 		"kusama" => match prefs.track.to_ascii_lowercase().as_str() {
 			"root" => KusamaRoot,
@@ -98,9 +100,9 @@ fn parse_inputs(prefs: ReferendumArgs) -> ProposalDetails {
 				Kusama(KusamaAssetHubOpenGovOrigin::ReferendumKiller),
 			"referendum-canceller" | "referendumcanceller" =>
 				Kusama(KusamaAssetHubOpenGovOrigin::ReferendumCanceller),
-			_ => panic!("Unsupported track! Tracks should be in the form `general-admin` or `generaladmin`."),
+			other => bail!("Unsupported Kusama track: \"{}\". Tracks should be in the form `general-admin` or `generaladmin`.", other),
 		},
-		_ => panic!("`network` must be `polkadot` or `kusama`"),
+		other => bail!("`network` must be `polkadot` or `kusama`, got \"{}\"", other),
 	};
 
 	let dispatch = match (prefs.at, prefs.after) {
@@ -110,7 +112,7 @@ fn parse_inputs(prefs: ReferendumArgs) -> ProposalDetails {
 			After(10)
 		},
 		(Some(_), Some(_)) => {
-			panic!("\nBoth `At` and `After` dispatch times provided. You can only use one.\n");
+			bail!("Both `--at` and `--after` dispatch times provided. You can only use one.");
 		},
 		(Some(at), None) => At(at),
 		(None, Some(after)) => After(after),
@@ -124,7 +126,7 @@ fn parse_inputs(prefs: ReferendumArgs) -> ProposalDetails {
 		match input.to_ascii_lowercase().as_str() {
 			"calldata" | "call-data" => CallData,
 			"appsuilink" | "apps-ui-link" => AppsUiLink,
-			_ => panic!("`output` must be `calldata` or `appsuilink`. If not specified, the default is `appsuilink`."),
+			other => bail!("`--output` must be `calldata` or `appsuilink`, got \"{}\"", other),
 		}
 	} else {
 		AppsUiLink
@@ -136,7 +138,7 @@ fn parse_inputs(prefs: ReferendumArgs) -> ProposalDetails {
 		match f.to_ascii_lowercase().as_str() {
 			"kusama" => false,
 			"polkadot" => true,
-			_ => panic!("`--fellowship` must be `kusama` or `polkadot`."),
+			other => bail!("`--fellowship` must be `kusama` or `polkadot`, got \"{}\"", other),
 		}
 	} else {
 		false
@@ -146,11 +148,11 @@ fn parse_inputs(prefs: ReferendumArgs) -> ProposalDetails {
 		let is_kusama_whitelisted =
 			matches!(track, NetworkTrack::Kusama(KusamaAssetHubOpenGovOrigin::WhitelistedCaller));
 		if !is_kusama_whitelisted {
-			panic!("`--fellowship polkadot` is only supported with `--network kusama --track whitelistedcaller`.");
+			bail!("`--fellowship polkadot` is only supported with `--network kusama --track whitelistedcaller`.");
 		}
 	}
 
-	ProposalDetails {
+	Ok(ProposalDetails {
 		proposal,
 		track,
 		dispatch,
@@ -159,14 +161,12 @@ fn parse_inputs(prefs: ReferendumArgs) -> ProposalDetails {
 		print_batch,
 		use_light_client,
 		fellowship_on_polkadot,
-	}
+	})
 }
 
 // Generate all the calls needed.
-pub(crate) async fn generate_calls(proposal_details: &ProposalDetails) -> PossibleCallsToSubmit {
+pub(crate) fn generate_calls(proposal_details: &ProposalDetails) -> Result<ReferendumCalls> {
 	match &proposal_details.track {
-		// Kusama Root Origin. Since the Root origin is not part of `OpenGovOrigin`, we match it
-		// specially.
 		NetworkTrack::KusamaRoot => {
 			use kusama_asset_hub::runtime_types::frame_support::dispatch::RawOrigin;
 			kusama_non_fellowship_referenda(
@@ -174,27 +174,20 @@ pub(crate) async fn generate_calls(proposal_details: &ProposalDetails) -> Possib
 				KusamaAssetHubOriginCaller::system(RawOrigin::Root),
 			)
 		},
-
-		// All special Kusama origins.
 		NetworkTrack::Kusama(kusama_track) => {
 			match kusama_track {
-				// Whitelisted calls are special.
 				KusamaAssetHubOpenGovOrigin::WhitelistedCaller =>
 					if proposal_details.fellowship_on_polkadot {
-						polkadot_fellowship_for_kusama_referenda(proposal_details).await
+						polkadot_fellowship_for_kusama_referenda(proposal_details)
 					} else {
-						kusama_fellowship_referenda(proposal_details).await
+						kusama_fellowship_referenda(proposal_details)
 					},
-
-				// All other Kusama origins.
 				_ => kusama_non_fellowship_referenda(
 					proposal_details,
 					KusamaAssetHubOriginCaller::Origins(kusama_track.clone()),
 				),
 			}
 		},
-
-		// Same for Polkadot Root origin. It is not part of OpenGovOrigins, so it gets its own arm.
 		NetworkTrack::PolkadotRoot => {
 			use polkadot_asset_hub::runtime_types::frame_support::dispatch::RawOrigin;
 			polkadot_non_fellowship_referenda(
@@ -202,14 +195,10 @@ pub(crate) async fn generate_calls(proposal_details: &ProposalDetails) -> Possib
 				PolkadotAssetHubOriginCaller::system(RawOrigin::Root),
 			)
 		},
-
-		// All special Polkadot origins.
 		NetworkTrack::Polkadot(polkadot_track) => {
 			match polkadot_track {
 				PolkadotAssetHubOpenGovOrigin::WhitelistedCaller =>
-					polkadot_fellowship_referenda(proposal_details).await,
-
-				// All other Polkadot origins.
+					polkadot_fellowship_referenda(proposal_details),
 				_ => polkadot_non_fellowship_referenda(
 					proposal_details,
 					PolkadotAssetHubOriginCaller::Origins(polkadot_track.clone()),
@@ -220,7 +209,7 @@ pub(crate) async fn generate_calls(proposal_details: &ProposalDetails) -> Possib
 }
 
 // Generate the calls needed for a proposal to pass through the Fellowship.
-async fn kusama_fellowship_referenda(proposal_details: &ProposalDetails) -> PossibleCallsToSubmit {
+fn kusama_fellowship_referenda(proposal_details: &ProposalDetails) -> Result<ReferendumCalls> {
 	use kusama_asset_hub::runtime_types::{
 		frame_support::traits::{preimages::Bounded::Lookup, schedule::DispatchTime},
 		pallet_preimage::pallet::Call as PreimageCall,
@@ -265,13 +254,8 @@ async fn kusama_fellowship_referenda(proposal_details: &ProposalDetails) -> Poss
 	// 3. Make a Fellowship referendum for `send_whitelist`.
 	//
 	// 4. Make a public referendum on Asset Hub.
-	let proposal_bytes = get_proposal_bytes(proposal_details.proposal.clone());
+	let proposal_bytes = get_proposal_bytes(proposal_details.proposal.clone())?;
 	let proposal_call_info = CallInfo::from_bytes(&proposal_bytes, Network::KusamaAssetHub);
-
-	let public_referendum_dispatch_time = match proposal_details.dispatch {
-		DispatchTimeWrapper::At(block) => DispatchTime::At(block),
-		DispatchTimeWrapper::After(block) => DispatchTime::After(block),
-	};
 
 	let whitelist_call = CallInfo::from_runtime_call(NetworkRuntimeCall::KusamaAssetHub(
 		KusamaAssetHubRuntimeCall::Whitelist(WhitelistCall::whitelist_call {
@@ -355,16 +339,18 @@ async fn kusama_fellowship_referenda(proposal_details: &ProposalDetails) -> Poss
 
 	// If it's a hash, let's write the data to a file you can upload.
 	match dispatch_preimage_print {
-		CallOrHash::Call(_) => (),
-		CallOrHash::Hash(_) => {
+		PreimageOrHash::Call(_) => (),
+		PreimageOrHash::Hash(_) => {
 			let mut info_to_write = "0x".to_owned();
 			info_to_write.push_str(hex::encode(dispatch_whitelisted_call.encoded).as_str());
-			fs::write("kusama_asset_hub_public_referendum_preimage_to_note.call", info_to_write)
-				.expect("it should write");
+			let fname = "kusama_asset_hub_public_referendum_preimage_to_note.call";
+			fs::write(fname, &info_to_write)
+				.with_context(|| format!("Failed to write preimage to {}", fname))?;
+			eprintln!("Note: preimage data written to ./{fname} (current directory)");
 		},
 	}
 
-	PossibleCallsToSubmit {
+	Ok(ReferendumCalls {
 		preimage_for_whitelist_call: None,
 		preimage_for_public_referendum: Some((
 			dispatch_preimage_print,
@@ -376,15 +362,15 @@ async fn kusama_fellowship_referenda(proposal_details: &ProposalDetails) -> Poss
 		public_referendum_submission: Some(NetworkRuntimeCall::KusamaAssetHub(
 			public_proposal.get_kusama_asset_hub_call().expect("kusama asset hub"),
 		)),
-	}
+	})
 }
 
 // Generate the calls needed for a Kusama proposal to pass through the Polkadot Fellowship.
 // The Fellowship referendum is submitted on Polkadot Collectives, while the public referendum
 // targets Kusama Asset Hub.
-async fn polkadot_fellowship_for_kusama_referenda(
+fn polkadot_fellowship_for_kusama_referenda(
 	proposal_details: &ProposalDetails,
-) -> PossibleCallsToSubmit {
+) -> Result<ReferendumCalls> {
 	use kusama_asset_hub::runtime_types::{
 		frame_support::traits::{preimages::Bounded::Lookup, schedule::DispatchTime},
 		pallet_preimage::pallet::Call as PreimageCall,
@@ -424,12 +410,12 @@ async fn polkadot_fellowship_for_kusama_referenda(
 	//    via Polkadot Asset Hub and the bridge.
 	// 3. Make a Fellowship referendum on Collectives for the XCM send.
 	// 4. Make a public referendum on Kusama Asset Hub.
-	let proposal_bytes = get_proposal_bytes(proposal_details.proposal.clone());
+	let proposal_bytes = get_proposal_bytes(proposal_details.proposal.clone())?;
 	let proposal_call_info = CallInfo::from_bytes(&proposal_bytes, Network::KusamaAssetHub);
 
 	let public_referendum_dispatch_time = match proposal_details.dispatch {
-		DispatchTimeWrapper::At(block) => DispatchTime::At(block),
-		DispatchTimeWrapper::After(block) => DispatchTime::After(block),
+		EnactmentTime::At(block) => DispatchTime::At(block),
+		EnactmentTime::After(block) => DispatchTime::After(block),
 	};
 
 	// whitelist_call for AHK
@@ -468,7 +454,6 @@ async fn polkadot_fellowship_for_kusama_referenda(
 		},
 	]);
 
-	// This is what the Fellowship will actually vote on enacting.
 	// Send from Collectives to Polkadot Asset Hub (sibling parachain), which then bridges
 	// to Kusama Asset Hub via InitiateTransfer.
 	let whitelist_over_xcm = CallInfo::from_runtime_call(NetworkRuntimeCall::PolkadotCollectives(
@@ -515,14 +500,14 @@ async fn polkadot_fellowship_for_kusama_referenda(
 		(proposal, Some(preimage))
 	};
 
-	// Now we put together the public referendum part on Kusama Asset Hub.
+	// Construct the public referendum on Kusama Asset Hub.
 	let dispatch_whitelisted_call = CallInfo::from_runtime_call(
 		NetworkRuntimeCall::KusamaAssetHub(KusamaAssetHubRuntimeCall::Whitelist(
 			WhitelistCall::dispatch_whitelisted_call_with_preimage {
 				call: Box::new(
 					proposal_call_info
 						.get_kusama_asset_hub_call()
-						.expect("it is a kusama asset hub call"),
+						.expect("kusama asset hub call"),
 				),
 			},
 		)),
@@ -546,25 +531,25 @@ async fn polkadot_fellowship_for_kusama_referenda(
 		}),
 	));
 
-	// Check the lengths and prepare preimages for printing.
 	let whitelist_preimage_print = preimage_for_whitelist_over_xcm
 		.map(|p| p.create_print_output(proposal_details.output_len_limit));
 	let (dispatch_preimage_print, dispatch_preimage_print_len) =
 		preimage_for_dispatch_whitelisted_call
 			.create_print_output(proposal_details.output_len_limit);
 
-	// If it's a hash, let's write the data to a file you can upload.
 	match dispatch_preimage_print {
-		CallOrHash::Call(_) => (),
-		CallOrHash::Hash(_) => {
+		PreimageOrHash::Call(_) => (),
+		PreimageOrHash::Hash(_) => {
 			let mut info_to_write = "0x".to_owned();
 			info_to_write.push_str(hex::encode(dispatch_whitelisted_call.encoded).as_str());
-			fs::write("kusama_asset_hub_public_referendum_preimage_to_note.call", info_to_write)
-				.expect("it should write");
+			let fname = "kusama_asset_hub_public_referendum_preimage_to_note.call";
+			fs::write(fname, &info_to_write)
+				.with_context(|| format!("Failed to write preimage to {}", fname))?;
+			eprintln!("Note: preimage data written to ./{fname} (current directory)");
 		},
 	}
 
-	PossibleCallsToSubmit {
+	Ok(ReferendumCalls {
 		preimage_for_whitelist_call: whitelist_preimage_print,
 		preimage_for_public_referendum: Some((
 			dispatch_preimage_print,
@@ -576,26 +561,25 @@ async fn polkadot_fellowship_for_kusama_referenda(
 		public_referendum_submission: Some(NetworkRuntimeCall::KusamaAssetHub(
 			public_proposal.get_kusama_asset_hub_call().expect("kusama asset hub"),
 		)),
-	}
+	})
 }
 
-// Generate the calls needed for a proposal to pass on Kusama without the Fellowship.
 fn kusama_non_fellowship_referenda(
 	proposal_details: &ProposalDetails,
 	origin: KusamaAssetHubOriginCaller,
-) -> PossibleCallsToSubmit {
+) -> Result<ReferendumCalls> {
 	use kusama_asset_hub::runtime_types::{
 		frame_support::traits::{preimages::Bounded::Lookup, schedule::DispatchTime},
 		pallet_preimage::pallet::Call as PreimageCall,
 		pallet_referenda::pallet::Call as ReferendaCall,
 	};
 
-	let proposal_bytes = get_proposal_bytes(proposal_details.proposal.clone());
+	let proposal_bytes = get_proposal_bytes(proposal_details.proposal.clone())?;
 	let proposal_call_info = CallInfo::from_bytes(&proposal_bytes, Network::KusamaAssetHub);
 
 	let public_referendum_dispatch_time = match proposal_details.dispatch {
-		DispatchTimeWrapper::At(block) => DispatchTime::At(block),
-		DispatchTimeWrapper::After(block) => DispatchTime::After(block),
+		EnactmentTime::At(block) => DispatchTime::At(block),
+		EnactmentTime::After(block) => DispatchTime::After(block),
 	};
 
 	let note_proposal_preimage = CallInfo::from_runtime_call(NetworkRuntimeCall::KusamaAssetHub(
@@ -614,20 +598,19 @@ fn kusama_non_fellowship_referenda(
 	let (preimage_print, preimage_print_len) =
 		note_proposal_preimage.create_print_output(proposal_details.output_len_limit);
 
-	PossibleCallsToSubmit {
+	Ok(ReferendumCalls {
 		preimage_for_whitelist_call: None,
 		preimage_for_public_referendum: Some((preimage_print, preimage_print_len)),
 		fellowship_referendum_submission: None,
 		public_referendum_submission: Some(NetworkRuntimeCall::KusamaAssetHub(
 			public_proposal.get_kusama_asset_hub_call().expect("kusama asset hub"),
 		)),
-	}
+	})
 }
 
-// Generate the calls needed for a proposal to pass through the Polkadot Fellowship.
-async fn polkadot_fellowship_referenda(
+fn polkadot_fellowship_referenda(
 	proposal_details: &ProposalDetails,
-) -> PossibleCallsToSubmit {
+) -> Result<ReferendumCalls> {
 	use polkadot_asset_hub::runtime_types::{
 		frame_support::traits::{preimages::Bounded::Lookup, schedule::DispatchTime},
 		pallet_preimage::pallet::Call as PreimageCall,
@@ -676,14 +659,9 @@ async fn polkadot_fellowship_referenda(
 	// 3. Make a Fellowship referendum for `send_whitelist`.
 	//
 	// 4. Make a public referendum on Asset Hub.
-	let proposal_bytes = get_proposal_bytes(proposal_details.proposal.clone());
+	let proposal_bytes = get_proposal_bytes(proposal_details.proposal.clone())?;
 	let proposal_call_info = CallInfo::from_bytes(&proposal_bytes, Network::PolkadotAssetHub);
 
-	let public_referendum_dispatch_time = match proposal_details.dispatch {
-		DispatchTimeWrapper::At(block) => DispatchTime::At(block),
-		DispatchTimeWrapper::After(block) => DispatchTime::After(block),
-	};
-	// Whitelist the call on the Relay Chain.
 	let whitelist_call = CallInfo::from_runtime_call(NetworkRuntimeCall::PolkadotAssetHub(
 		PolkadotAssetHubRuntimeCall::Whitelist(WhitelistCall::whitelist_call {
 			call_hash: H256(proposal_call_info.hash),
@@ -786,16 +764,18 @@ async fn polkadot_fellowship_referenda(
 
 	// If it's a hash, let's write the data to a file you can upload.
 	match dispatch_preimage_print {
-		CallOrHash::Call(_) => (),
-		CallOrHash::Hash(_) => {
+		PreimageOrHash::Call(_) => (),
+		PreimageOrHash::Hash(_) => {
 			let mut info_to_write = "0x".to_owned();
 			info_to_write.push_str(hex::encode(dispatch_whitelisted_call.encoded).as_str());
-			fs::write("polkadot_asset_hub_public_referendum_preimage_to_note.call", info_to_write)
-				.expect("it should write");
+			let fname = "polkadot_asset_hub_public_referendum_preimage_to_note.call";
+			fs::write(fname, &info_to_write)
+				.with_context(|| format!("Failed to write preimage to {}", fname))?;
+			eprintln!("Note: preimage data written to ./{fname} (current directory)");
 		},
 	}
 
-	PossibleCallsToSubmit {
+	Ok(ReferendumCalls {
 		preimage_for_whitelist_call: whitelist_preimage_print,
 		preimage_for_public_referendum: Some((
 			dispatch_preimage_print,
@@ -807,26 +787,25 @@ async fn polkadot_fellowship_referenda(
 		public_referendum_submission: Some(NetworkRuntimeCall::PolkadotAssetHub(
 			public_proposal.get_polkadot_asset_hub_call().expect("polkadot asset hub"),
 		)),
-	}
+	})
 }
 
-// Generate the calls needed for a proposal to pass on Polkadot without the Fellowship.
 fn polkadot_non_fellowship_referenda(
 	proposal_details: &ProposalDetails,
 	origin: PolkadotAssetHubOriginCaller,
-) -> PossibleCallsToSubmit {
+) -> Result<ReferendumCalls> {
 	use polkadot_asset_hub::runtime_types::{
 		frame_support::traits::{preimages::Bounded::Lookup, schedule::DispatchTime},
 		pallet_preimage::pallet::Call as PreimageCall,
 		pallet_referenda::pallet::Call as ReferendaCall,
 	};
 
-	let proposal_bytes = get_proposal_bytes(proposal_details.proposal.clone());
+	let proposal_bytes = get_proposal_bytes(proposal_details.proposal.clone())?;
 	let proposal_call_info = CallInfo::from_bytes(&proposal_bytes, Network::PolkadotAssetHub);
 
 	let public_referendum_dispatch_time = match proposal_details.dispatch {
-		DispatchTimeWrapper::At(block) => DispatchTime::At(block),
-		DispatchTimeWrapper::After(block) => DispatchTime::After(block),
+		EnactmentTime::At(block) => DispatchTime::At(block),
+		EnactmentTime::After(block) => DispatchTime::After(block),
 	};
 
 	let note_proposal_preimage = CallInfo::from_runtime_call(NetworkRuntimeCall::PolkadotAssetHub(
@@ -847,14 +826,14 @@ fn polkadot_non_fellowship_referenda(
 	let (preimage_print, preimage_print_len) =
 		note_proposal_preimage.create_print_output(proposal_details.output_len_limit);
 
-	PossibleCallsToSubmit {
+	Ok(ReferendumCalls {
 		preimage_for_whitelist_call: None,
 		preimage_for_public_referendum: Some((preimage_print, preimage_print_len)),
 		fellowship_referendum_submission: None,
 		public_referendum_submission: Some(NetworkRuntimeCall::PolkadotAssetHub(
 			public_proposal.get_polkadot_asset_hub_call().expect("polkadot asset hub"),
 		)),
-	}
+	})
 }
 
 // Takes all the `calls` needed to submit and logs them according to the user's preferences.
@@ -863,12 +842,12 @@ fn deliver_output(proposal_details: ProposalDetails, calls: PossibleCallsToSubmi
 
 	if let Some((call_or_hash, len)) = calls.preimage_for_whitelist_call {
 		match call_or_hash {
-			CallOrHash::Call(c) => {
+			PreimageOrHash::Call(c) => {
 				println!("\nSubmit the preimage for the Fellowship referendum:");
 				print_output(&proposal_details.output, &c, proposal_details.use_light_client);
 				batch_of_calls.push(c);
 			},
-			CallOrHash::Hash(h) => {
+			PreimageOrHash::Hash(h) => {
 				println!(
 					"\nPreimage for the public whitelist call too large ({len} bytes). Not included in batch."
 				);
@@ -883,12 +862,12 @@ fn deliver_output(proposal_details: ProposalDetails, calls: PossibleCallsToSubmi
 	}
 	if let Some((call_or_hash, len)) = calls.preimage_for_public_referendum {
 		match call_or_hash {
-			CallOrHash::Call(c) => {
+			PreimageOrHash::Call(c) => {
 				println!("\nSubmit the preimage for the public referendum:");
 				print_output(&proposal_details.output, &c, proposal_details.use_light_client);
 				batch_of_calls.push(c);
 			},
-			CallOrHash::Hash(h) => {
+			PreimageOrHash::Hash(h) => {
 				println!(
 					"\nPreimage for the public referendum too large ({len} bytes). Not included in batch."
 				);
@@ -934,7 +913,15 @@ fn handle_batch_of_calls(output: &Output, batch: Vec<NetworkRuntimeCall>, use_li
 			NetworkRuntimeCall::Polkadot(cc) => polkadot_relay_batch.push(cc),
 			NetworkRuntimeCall::PolkadotAssetHub(cc) => polkadot_asset_hub_batch.push(cc),
 			NetworkRuntimeCall::PolkadotCollectives(cc) => polkadot_collectives_batch.push(cc),
-			_ => panic!("no other chains are needed for this"),
+			NetworkRuntimeCall::KusamaBridgeHub(_)
+			| NetworkRuntimeCall::KusamaPeople(_)
+			| NetworkRuntimeCall::KusamaCoretime(_)
+			| NetworkRuntimeCall::KusamaEncointer(_)
+			| NetworkRuntimeCall::PolkadotBridgeHub(_)
+			| NetworkRuntimeCall::PolkadotPeople(_)
+			| NetworkRuntimeCall::PolkadotCoretime(_) => {
+				unreachable!("system parachain calls should not appear in referendum batch")
+			},
 		}
 	}
 	if !kusama_relay_batch.is_empty() {
@@ -977,82 +964,16 @@ fn handle_batch_of_calls(output: &Output, batch: Vec<NetworkRuntimeCall>, use_li
 
 // Format the data to print to console.
 fn print_output(output: &Output, network_call: &NetworkRuntimeCall, use_light_client: bool) {
-	match network_call {
-		NetworkRuntimeCall::Kusama(call) => {
-			let endpoint = if use_light_client {
-				"light-client"
-			} else {
-				"wss%3A%2F%2Fkusama-rpc.dwellir.com"
-			};
-			let network_id = "kusama";
-			match output {
-				Output::CallData => println!("0x{}", hex::encode(call.encode())),
-				Output::AppsUiLink => println!(
-					"https://dev.papi.how/extrinsics#data=0x{}&networkId={network_id}&endpoint={endpoint}",
-					hex::encode(call.encode())
-				),
-			}
-		},
-		NetworkRuntimeCall::KusamaAssetHub(call) => {
-			let endpoint = if use_light_client {
-				"light-client"
-			} else {
-				"wss%3A%2F%2Fasset-hub-kusama-rpc.dwellir.com"
-			};
-			let network_id = "kusama_asset_hub";
-			match output {
-				Output::CallData => println!("0x{}", hex::encode(call.encode())),
-				Output::AppsUiLink => println!(
-					"https://dev.papi.how/extrinsics#data=0x{}&networkId={network_id}&endpoint={endpoint}",
-					hex::encode(call.encode())
-				),
-			}
-		},
-		NetworkRuntimeCall::Polkadot(call) => {
-			let endpoint = if use_light_client {
-				"light-client"
-			} else {
-				"wss%3A%2F%2Fpolkadot-rpc.dwellir.com"
-			};
-			let network_id = "polkadot";
-			match output {
-				Output::CallData => println!("0x{}", hex::encode(call.encode())),
-				Output::AppsUiLink => println!(
-					"https://dev.papi.how/extrinsics#data=0x{}&networkId={network_id}&endpoint={endpoint}",
-					hex::encode(call.encode())
-				),
-			}
-		},
-		NetworkRuntimeCall::PolkadotAssetHub(call) => {
-			let endpoint = if use_light_client {
-				"light-client"
-			} else {
-				"wss%3A%2F%2Fasset-hub-polkadot-rpc.dwellir.com"
-			};
-			let network_id = "polkadot_asset_hub";
-			match output {
-				Output::CallData => println!("0x{}", hex::encode(call.encode())),
-				Output::AppsUiLink => println!(
-					"https://dev.papi.how/extrinsics#data=0x{}&networkId={network_id}&endpoint={endpoint}",
-					hex::encode(call.encode())
-				),
-			}
-		},
-		NetworkRuntimeCall::PolkadotCollectives(call) => {
-			let endpoint = if use_light_client {
-				"light-client"
-			} else {
-				"wss%3A%2F%2Fpolkadot-collectives-rpc.polkadot.io"
-			};
-			let network_id = "polkadot_collectives";
-			match output {
-				Output::CallData => println!("0x{}", hex::encode(call.encode())),
-				Output::AppsUiLink => println!(
-					"https://dev.papi.how/extrinsics#data=0x{}&networkId={network_id}&endpoint={endpoint}",
-					hex::encode(call.encode())
-				),
-			}
-		},
-		_ => panic!("no other chains are needed for this"),
+	let network = network_call.network();
+	let encoded = hex::encode(network_call.encode_call());
+	let endpoint = if use_light_client { "light-client" } else { network.rpc_endpoint() };
+	let network_id = network.papi_network_id();
+
+	match output {
+		Output::CallData => println!("0x{}", encoded),
+		Output::AppsUiLink => println!(
+			"https://dev.papi.how/extrinsics#data=0x{}&networkId={network_id}&endpoint={endpoint}",
+			encoded
+		),
 	}
 }
