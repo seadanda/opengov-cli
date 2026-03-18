@@ -13,6 +13,7 @@ mod tests;
 
 /// Utilities for submitting OpenGov referenda and constructing tedious calls.
 #[derive(Debug, ClapParser)]
+#[command(version)]
 enum Command {
 	BuildUpgrade(UpgradeArgs),
 	SubmitReferendum(ReferendumArgs),

@@ -230,8 +230,9 @@ impl CallInfo {
 			NetworkRuntimeCall::KusamaEncointer(cc) => (Network::KusamaEncointer, cc.encode()),
 			NetworkRuntimeCall::Polkadot(cc) => (Network::Polkadot, cc.encode()),
 			NetworkRuntimeCall::PolkadotAssetHub(cc) => (Network::PolkadotAssetHub, cc.encode()),
-			NetworkRuntimeCall::PolkadotCollectives(cc) =>
-				(Network::PolkadotCollectives, cc.encode()),
+			NetworkRuntimeCall::PolkadotCollectives(cc) => {
+				(Network::PolkadotCollectives, cc.encode())
+			},
 			NetworkRuntimeCall::PolkadotBridgeHub(cc) => (Network::PolkadotBridgeHub, cc.encode()),
 			NetworkRuntimeCall::PolkadotPeople(cc) => (Network::PolkadotPeople, cc.encode()),
 			NetworkRuntimeCall::PolkadotCoretime(cc) => (Network::PolkadotCoretime, cc.encode()),
@@ -467,7 +468,34 @@ impl CallInfo {
 						self.get_polkadot_collectives_call().expect("collectives");
 					CallOrHash::Call(NetworkRuntimeCall::PolkadotCollectives(collectives_call))
 				},
-				_ => panic!("to do"),
+				Network::KusamaBridgeHub => {
+					let call = self.get_kusama_bridge_hub_call().expect("kusama bridge hub");
+					CallOrHash::Call(NetworkRuntimeCall::KusamaBridgeHub(call))
+				},
+				Network::KusamaPeople => {
+					let call = self.get_kusama_people_call().expect("kusama people");
+					CallOrHash::Call(NetworkRuntimeCall::KusamaPeople(call))
+				},
+				Network::KusamaCoretime => {
+					let call = self.get_kusama_coretime_call().expect("kusama coretime");
+					CallOrHash::Call(NetworkRuntimeCall::KusamaCoretime(call))
+				},
+				Network::KusamaEncointer => {
+					let call = self.get_kusama_encointer_call().expect("kusama encointer");
+					CallOrHash::Call(NetworkRuntimeCall::KusamaEncointer(call))
+				},
+				Network::PolkadotBridgeHub => {
+					let call = self.get_polkadot_bridge_hub_call().expect("polkadot bridge hub");
+					CallOrHash::Call(NetworkRuntimeCall::PolkadotBridgeHub(call))
+				},
+				Network::PolkadotPeople => {
+					let call = self.get_polkadot_people_call().expect("polkadot people");
+					CallOrHash::Call(NetworkRuntimeCall::PolkadotPeople(call))
+				},
+				Network::PolkadotCoretime => {
+					let call = self.get_polkadot_coretime_call().expect("polkadot coretime");
+					CallOrHash::Call(NetworkRuntimeCall::PolkadotCoretime(call))
+				},
 			}
 		};
 		(print_output, self.length)

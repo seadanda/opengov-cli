@@ -264,6 +264,14 @@ async fn download_runtimes(upgrade_details: &UpgradeDetails) {
 		let path_name = format!("{directory}{fname}");
 		println!("Downloading... {fname}");
 		let response = reqwest::get(download_url).await.expect("we need files to work");
+		if !response.status().is_success() {
+			panic!(
+				"Failed to download runtime: {} returned HTTP {}. Check that the release version exists at {}",
+				fname,
+				response.status(),
+				download_url,
+			);
+		}
 		let runtime = response.bytes().await.expect("need bytes");
 		// todo: we could actually just hash the file, mutate UpgradeDetails, and not write it.
 		// saving it may be more convenient anyway though, since someone needs to upload it after
@@ -507,7 +515,6 @@ async fn construct_kusama_batch(calls: Vec<CallInfo>, additional: Option<CallInf
 
 	let mut batch_calls = Vec::new();
 	for auth in calls {
-		dbg!(&auth.network);
 		if matches!(auth.network, Network::KusamaAssetHub) {
 			batch_calls.push(auth.get_kusama_asset_hub_call().expect("We just constructed this"));
 		} else {
